@@ -12,7 +12,6 @@ import { cn } from "@/lib/utils";
 interface Project {
   id: string;
   nama_projek: string;
-  kategori?: string;
   label?: string;
   penjelasan: string;
   progress: number;
@@ -95,13 +94,17 @@ export default function KelolaProjek() {
     try {
       const { data, error } = await supabase
         .from("projects")
-        .insert([{ nama_projek: "", penjelasan: "", kategori: "", label: "", info_server: "", progress: 0 }])
+        .insert([{ nama_projek: "", penjelasan: "", label: "", info_server: "", progress: 0 }])
         .select();
-      if (error) throw error;
+      if (error) {
+        console.error("Supabase insert error:", error);
+        alert(`Gagal menambah projek: ${error.message}`);
+        return;
+      }
       if (data) setProjects([data[0], ...projects]);
     } catch (err) {
-      alert("Gagal menambah projek. Pastikan RLS di Supabase sudah dimatikan atau otentikasi sudah diatur.");
-      console.error(err);
+      console.error("Unexpected error:", err);
+      alert("Gagal menambah projek karena error tidak terduga.");
     }
   }
 
