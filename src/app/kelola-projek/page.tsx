@@ -8,7 +8,63 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
+import { GripVertical } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 
+function SortableRow({ 
+  id, 
+  children, 
+  isExpanded,
+  className
+}: { 
+  id: string; 
+  children: React.ReactNode; 
+  isExpanded: boolean;
+  className?: string;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    ...(isDragging ? { position: "relative", zIndex: 50, opacity: 0.8, backgroundColor: "var(--accent)" } : {}),
+  } as React.CSSProperties;
+
+  return (
+    <>
+      <tr ref={setNodeRef} style={style} className={cn("group transition-colors", className, isExpanded ? "bg-accent/50 dark:bg-white/[0.04]" : "")}>
+        <td className="w-8 px-2 text-center cursor-move border-r border-border/50 bg-primary/5 hover:bg-primary/10 transition-colors" {...attributes} {...listeners}>
+           <GripVertical className="w-4 h-4 mx-auto text-muted-foreground" />
+        </td>
+        {children}
+      </tr>
+    </>
+  );
+}
 interface Project {
   id: string;
   nama_projek: string;
@@ -17,6 +73,7 @@ interface Project {
   progress: number;
   info_server: string;
   created_at: string;
+  order_index?: number;
 }
 
 interface Todo {
@@ -38,7 +95,7 @@ export default function KelolaProjek() {
   const [expandedProject, setExpandedProject] = useState<string | null>(null);
 
   // Column resize state
-  const [colWidths, setColWidths] = useState([48, 220, 300, 200, 160, 130, 110]);
+  const [colWidths, setColWidths] = useState([40, 48, 220, 300, 200, 160, 130, 110]);
   const dragRef = useRef<{ colIndex: number; startX: number; startWidth: number } | null>(null);
 
   const handleMouseDown = useCallback((colIndex: number, e: React.MouseEvent) => {
@@ -78,7 +135,7 @@ export default function KelolaProjek() {
     try {
       setLoading(true);
       const [projRes, todoRes] = await Promise.all([
-        supabase.from("projects").select("*").order("created_at", { ascending: false }),
+        supabase.from("projects").select("*").order("order_index", { ascending: true }).order("created_at", { ascending: false }),
         supabase.from("todos").select("*"),
       ]);
       if (projRes.data) setProjects(projRes.data);
@@ -94,7 +151,7 @@ export default function KelolaProjek() {
     try {
       const { data, error } = await supabase
         .from("projects")
-        .insert([{ nama_projek: "", penjelasan: "", label: "", info_server: "", progress: 0 }])
+        .insert([{ nama_projek: "", penjelasan: "", label: "", info_server: "", progress: 0, order_index: projects.length }])
         .select();
       if (error) {
         console.error("Supabase insert error:", error);
@@ -222,6 +279,40 @@ export default function KelolaProjek() {
     }
   }
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+
+    if (over && active.id !== over.id) {
+      setProjects((items) => {
+        const oldIndex = items.findIndex((item) => item.id === active.id);
+        const newIndex = items.findIndex((item) => item.id === over.id);
+
+        const newItems = arrayMove(items, oldIndex, newIndex);
+        
+        // Update order_index in database for affected items
+        newItems.forEach((item, index) => {
+          if (item.order_index !== index) {
+            supabase.from("projects").update({ order_index: index }).eq("id", item.id).then();
+          }
+        });
+
+        // Optimistically set the local order_index
+        return newItems.map((item, index) => ({ ...item, order_index: index }));
+      });
+    }
+  }
+
   const filteredProjects = projects.filter((p) =>
     p.nama_projek.toLowerCase().includes(search.toLowerCase())
   );
@@ -287,6 +378,7 @@ export default function KelolaProjek() {
             <thead className="text-foreground/60 border-b border-border bg-accent/40 dark:bg-white/[0.03] select-none">
               <tr>
                 {[
+                  { label: null, icon: null, isDragHandle: true },
                   { label: null, icon: null, isCheckbox: true },
                   { label: "Nama Projek", icon: null },
                   { label: "Penjelasan", icon: <AlignLeft className="w-3.5 h-3.5 mr-2 opacity-50" /> },
@@ -296,7 +388,7 @@ export default function KelolaProjek() {
                   { label: "Progress", icon: <AlignLeft className="w-3.5 h-3.5 mr-2 opacity-50" /> },
                 ].map((col, i) => (
                   <th key={i} className="relative px-4 py-3 font-semibold text-xs uppercase tracking-wider whitespace-nowrap border-r border-border/50 overflow-hidden">
-                    {col.isCheckbox ? (
+                    {col.isDragHandle ? null : col.isCheckbox ? (
                       <div className="flex justify-center">
                         <Checkbox
                           checked={selected.size === filteredProjects.length && filteredProjects.length > 0}
@@ -311,7 +403,7 @@ export default function KelolaProjek() {
                       </div>
                     )}
                     {/* Drag handle */}
-                    {i < 6 && (
+                    {i > 0 && i < 7 && (
                       <div
                         className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors z-10"
                         onMouseDown={(e) => handleMouseDown(i, e)}
@@ -324,33 +416,33 @@ export default function KelolaProjek() {
             <tbody className="divide-y divide-border/50 text-[13px]">
               {filteredProjects.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="h-32 text-center text-muted-foreground">
+                  <td colSpan={8} className="h-32 text-center text-muted-foreground">
                     Belum ada data. Klik "Baris Baru" untuk memulai.
                   </td>
                 </tr>
               ) : (
-                <>
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd} modifiers={[restrictToVerticalAxis]}>
+                  <SortableContext items={filteredProjects.map(p => p.id)} strategy={verticalListSortingStrategy}>
+                    {filteredProjects.map((project) => {
+                      const pTodos = todos.filter((t) => t.project_id === project.id);
+                      const rootTodos = pTodos.filter(t => !t.parent_id);
+                      const doneCnt = pTodos.filter((t) => t.is_done).length;
+                      const isSelected = selected.has(project.id);
+                      const isExpanded = expandedProject === project.id;
+                      
+                      const progressText = project.progress > 0 ? `${project.progress}%` : "";
+                      const todoText = pTodos.length > 0 ? `${doneCnt} / ${pTodos.length} tugas` : "";
 
-                {filteredProjects.map((project) => {
-                  const pTodos = todos.filter((t) => t.project_id === project.id);
-                  const rootTodos = pTodos.filter(t => !t.parent_id);
-                  const doneCnt = pTodos.filter((t) => t.is_done).length;
-                  const isSelected = selected.has(project.id);
-                  const isExpanded = expandedProject === project.id;
-                  
-                  const progressText = project.progress > 0 ? `${project.progress}%` : "";
-                  const todoText = pTodos.length > 0 ? `${doneCnt} / ${pTodos.length} tugas` : "";
-
-                  return (
-                    <React.Fragment key={project.id}>
-                      <tr
-                        className={cn(
-                          "group transition-colors",
-                          isSelected ? "bg-primary/5" : "hover:bg-accent/60 dark:hover:bg-white/[0.03] focus-within:bg-accent/60 dark:focus-within:bg-white/[0.03]",
-                          isExpanded ? "bg-accent/50 dark:bg-white/[0.04]" : ""
-                        )}
-                      >
-                        <td className="px-4 py-2 text-center border-r border-border/50">
+                      return (
+                        <React.Fragment key={project.id}>
+                          <SortableRow
+                            id={project.id}
+                            isExpanded={isExpanded}
+                            className={cn(
+                              isSelected ? "bg-primary/5" : "hover:bg-accent/60 dark:hover:bg-white/[0.03] focus-within:bg-accent/60 dark:focus-within:bg-white/[0.03]"
+                            )}
+                          >
+                            <td className="px-4 py-2 text-center border-r border-border/50">
                           <Checkbox
                             checked={isSelected}
                             onCheckedChange={() => toggleSelect(project.id)}
@@ -426,12 +518,12 @@ export default function KelolaProjek() {
                             </span>
                           </div>
                         </td>
-                      </tr>
+                      </SortableRow>
 
                       {/* Inline Expanded Todos Detail */}
                       {isExpanded && (
                         <tr className="bg-accent/30 dark:bg-white/[0.02]">
-                          <td colSpan={8} className="p-0 border-b border-border/50">
+                          <td colSpan={9} className="p-0 border-b border-border/50">
                             <div className="p-5 pl-12 flex flex-col gap-4">
                               <p className="text-xs font-bold uppercase tracking-widest text-primary">
                                 Todo List — {project.nama_projek || "Projek Baru"}
@@ -547,7 +639,8 @@ export default function KelolaProjek() {
                     </React.Fragment>
                   );
                 })}
-                </>
+                  </SortableContext>
+                </DndContext>
               )}
             </tbody>
           </table>
